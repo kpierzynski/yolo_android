@@ -8,6 +8,7 @@ import android.graphics.BitmapFactory
 import android.graphics.ImageFormat
 import android.graphics.Rect
 import android.graphics.YuvImage
+import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -19,26 +20,25 @@ import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import java.io.ByteArrayOutputStream
 import java.nio.FloatBuffer
 import java.util.concurrent.Executors
-import androidx.compose.foundation.layout.*
-import androidx.compose.material3.Text
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.unit.sp
-import androidx.compose.ui.unit.dp
-import androidx.compose.foundation.background
-
 
 
 var predictedLabel by mutableStateOf("—")
@@ -57,14 +57,21 @@ class MainActivity : ComponentActivity() {
     var currentConfidence by mutableStateOf(0f)
 
 
-    private val requestPermission =
-        registerForActivityResult(
-            ActivityResultContracts.RequestPermission()
-        ) { granted ->
-            if (granted) {
-                startCamera()
-            }
+    private val requestPermission = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) {
+            startCamera()
         }
+    }
+
+    private val pickModelLauncher = registerForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri != null) {
+            loadModelFromUri(uri)
+        }
+    }
 
 
     val labels = listOf(
@@ -79,6 +86,28 @@ class MainActivity : ComponentActivity() {
         "wnętrze"
     )
 
+    fun loadModelFromUri(uri: Uri) {
+        try {
+            val inputStream = contentResolver.openInputStream(uri) ?: return
+
+            val modelBytes = inputStream.readBytes()
+            inputStream.close()
+
+            // Zamykamy starą sesję
+            ortSession.close()
+
+            // Tworzymy nową
+            ortSession = ortEnv.createSession(
+                modelBytes, OrtSession.SessionOptions()
+            )
+
+            println("MODEL LOADED FROM URI")
+
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -87,14 +116,12 @@ class MainActivity : ComponentActivity() {
             Box(modifier = Modifier.fillMaxSize()) {
 
                 AndroidView(
-                    modifier = Modifier.fillMaxSize(),
-                    factory = { context ->
+                    modifier = Modifier.fillMaxSize(), factory = { context ->
                         previewView = PreviewView(context).apply {
                             scaleType = PreviewView.ScaleType.FILL_CENTER
                         }
                         previewView
-                    }
-                )
+                    })
 
                 Text(
                     text = "${currentLabel} (${(currentConfidence * 100).toInt()}%)",
@@ -115,29 +142,19 @@ class MainActivity : ComponentActivity() {
 
         ortEnv = OrtEnvironment.getEnvironment()
 
-        val modelBytes = assets.open("yolo_v11_classifier.onnx").readBytes()
+        val modelBytes = assets.open("yolo_v11_classifier_old.onnx").readBytes()
 
         ortSession = ortEnv.createSession(
-            modelBytes,
-            OrtSession.SessionOptions()
+            modelBytes, OrtSession.SessionOptions()
         )
 
-//        val inputShape = longArrayOf(1, 3, 224, 224)
-//        val inputData = FloatArray(1 * 3 * 224 * 224) { 0.0f }
-//
-//        val tensor = OnnxTensor.createTensor(
-//            ortEnv,
-//            FloatBuffer.wrap(inputData),
-//            inputShape
-//        )
-//
-//        val output = runInference(tensor)
-//
-//        val bitmap = BitmapFactory.decodeResource(resources, R.drawable.test)
-//        val (label, conf) = classify(bitmap)
-//        println("PREDICTED: $label (${conf * 100}%)")
 
         requestPermission.launch(android.Manifest.permission.CAMERA)
+
+        pickModelLauncher.launch(
+            arrayOf("application/octet-stream")
+        )
+
 
     }
 
@@ -147,17 +164,13 @@ class MainActivity : ComponentActivity() {
         cameraProviderFuture.addListener({
             val cameraProvider = cameraProviderFuture.get()
 
-            val preview = Preview.Builder()
-                .build()
-                .also {
-                    it.setSurfaceProvider(previewView.surfaceProvider)
-                }
+            val preview = Preview.Builder().build().also {
+                it.setSurfaceProvider(previewView.surfaceProvider)
+            }
 
-            val imageAnalysis = ImageAnalysis.Builder()
-                .setBackpressureStrategy(
-                    ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST
-                )
-                .build()
+            val imageAnalysis = ImageAnalysis.Builder().setBackpressureStrategy(
+                ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST
+            ).build()
 
             imageAnalysis.setAnalyzer(
                 Executors.newSingleThreadExecutor()
@@ -187,10 +200,7 @@ class MainActivity : ComponentActivity() {
 
             cameraProvider.unbindAll()
             cameraProvider.bindToLifecycle(
-                this,
-                cameraSelector,
-                preview,
-                imageAnalysis
+                this, cameraSelector, preview, imageAnalysis
             )
 
         }, ContextCompat.getMainExecutor(this))
@@ -212,25 +222,17 @@ class MainActivity : ComponentActivity() {
         uBuffer.get(nv21, ySize + vSize, uSize)
 
         val yuvImage = YuvImage(
-            nv21,
-            ImageFormat.NV21,
-            image.width,
-            image.height,
-            null
+            nv21, ImageFormat.NV21, image.width, image.height, null
         )
 
         val out = ByteArrayOutputStream()
         yuvImage.compressToJpeg(
-            Rect(0, 0, image.width, image.height),
-            90,
-            out
+            Rect(0, 0, image.width, image.height), 90, out
         )
 
         val jpegBytes = out.toByteArray()
         return BitmapFactory.decodeByteArray(
-            jpegBytes,
-            0,
-            jpegBytes.size
+            jpegBytes, 0, jpegBytes.size
         )
     }
 
@@ -283,9 +285,7 @@ class MainActivity : ComponentActivity() {
         val shape = longArrayOf(1, 3, 224, 224)
 
         return OnnxTensor.createTensor(
-            ortEnv,
-            FloatBuffer.wrap(inputData),
-            shape
+            ortEnv, FloatBuffer.wrap(inputData), shape
         )
     }
 
@@ -307,7 +307,6 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun Greeting(name: String, modifier: Modifier = Modifier) {
     Text(
-        text = "Hello $name!",
-        modifier = modifier
+        text = "Hello $name!", modifier = modifier
     )
 }
