@@ -21,9 +21,15 @@ import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.systemBarsPadding
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Button
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -41,172 +47,244 @@ import java.nio.FloatBuffer
 import java.util.concurrent.Executors
 
 
-var predictedLabel by mutableStateOf("—")
-var predictedConf by mutableStateOf(0f)
+/* ---------- APP STATE ---------- */
 
+enum class AppState {
+    IDLE,
+    MODEL_READY,
+    RUNNING
+}
+
+/* ---------- ACTIVITY ---------- */
 
 class MainActivity : ComponentActivity() {
-    lateinit var ortEnv: OrtEnvironment
-    lateinit var ortSession: OrtSession
 
-    lateinit var previewView: PreviewView
+    /* --- ONNX --- */
+    private lateinit var ortEnv: OrtEnvironment
+    private lateinit var ortSession: OrtSession
 
-    var lastInferenceTime = 0L
+    /* --- CAMERA --- */
+    private lateinit var previewView: PreviewView
+    private var cameraProvider: ProcessCameraProvider? = null
+    private val cameraExecutor = Executors.newSingleThreadExecutor()
+    private var lastInferenceTime = 0L
 
-    var currentLabel by mutableStateOf("–")
-    var currentConfidence by mutableStateOf(0f)
+    /* --- UI STATE --- */
+    private var appState by mutableStateOf(AppState.IDLE)
+    private var currentLabel by mutableStateOf("—")
+    private var currentConfidence by mutableStateOf(0f)
 
-
-    private val requestPermission = registerForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        if (granted) {
-            startCamera()
-        }
-    }
-
-    private val pickModelLauncher = registerForActivityResult(
-        ActivityResultContracts.OpenDocument()
-    ) { uri ->
-        if (uri != null) {
-            loadModelFromUri(uri)
-        }
-    }
-
-
-    val labels = listOf(
-        "lewo",
-        "prawo",
-        "przód",
-        "przód-lewo",
-        "przód-prawo",
-        "tył",
-        "tył-lewo",
-        "tył-prawo",
-        "wnętrze"
+    /* --- LABELS --- */
+    private val labels = listOf(
+        "lewo", "prawo", "przód", "przód-lewo",
+        "przód-prawo", "tył", "tył-lewo",
+        "tył-prawo", "wnętrze"
     )
 
-    fun loadModelFromUri(uri: Uri) {
-        try {
-            val inputStream = contentResolver.openInputStream(uri) ?: return
+    /* ---------- PERMISSIONS ---------- */
 
-            val modelBytes = inputStream.readBytes()
-            inputStream.close()
-
-            // Zamykamy starą sesję
-            ortSession.close()
-
-            // Tworzymy nową
-            ortSession = ortEnv.createSession(
-                modelBytes, OrtSession.SessionOptions()
-            )
-
-            println("MODEL LOADED FROM URI")
-
-        } catch (e: Exception) {
-            e.printStackTrace()
+    private val requestCameraPermission =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            if (granted && appState == AppState.RUNNING) {
+                startCamera()
+            }
         }
-    }
 
+    /* ---------- FILE PICKER ---------- */
+
+    private val pickModelLauncher =
+        registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+            uri?.let {
+                if (loadModelFromUri(it)) {
+                    appState = AppState.MODEL_READY
+                }
+            }
+        }
+
+    /* ---------- LIFECYCLE ---------- */
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        setContent {
-            Box(modifier = Modifier.fillMaxSize()) {
-
-                AndroidView(
-                    modifier = Modifier.fillMaxSize(), factory = { context ->
-                        previewView = PreviewView(context).apply {
-                            scaleType = PreviewView.ScaleType.FILL_CENTER
-                        }
-                        previewView
-                    })
-
-                Text(
-                    text = "${currentLabel} (${(currentConfidence * 100).toInt()}%)",
-                    color = Color.White,
-                    fontSize = 32.sp,
-                    modifier = Modifier
-                        .align(Alignment.TopCenter)
-                        .padding(16.dp)
-                        .background(
-                            Color.Black.copy(alpha = 0.6f)
-                        )
-                        .padding(12.dp)
-                )
-            }
-        }
-
-
 
         ortEnv = OrtEnvironment.getEnvironment()
 
-        val modelBytes = assets.open("yolo_v11_classifier_old.onnx").readBytes()
-
-        ortSession = ortEnv.createSession(
-            modelBytes, OrtSession.SessionOptions()
-        )
-
-
-        requestPermission.launch(android.Manifest.permission.CAMERA)
-
-        pickModelLauncher.launch(
-            arrayOf("application/octet-stream")
-        )
-
-
+        setContent { AppUI() }
     }
 
-    fun startCamera() {
-        val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
+    /* ---------- UI ---------- */
 
-        cameraProviderFuture.addListener({
-            val cameraProvider = cameraProviderFuture.get()
+    @Composable
+    fun AppUI() {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black)
+                .systemBarsPadding() // 🔥 KLUCZOWE
+        ) {
+
+            /* ---------- CAMERA PREVIEW ---------- */
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .background(Color.Black)
+            ) {
+                if (appState == AppState.RUNNING) {
+                    AndroidView(
+                        modifier = Modifier.fillMaxSize(),
+                        factory = { context ->
+                            previewView = PreviewView(context).apply {
+                                scaleType = PreviewView.ScaleType.FILL_CENTER
+                            }
+                            previewView
+                        }
+                    )
+
+                    // Overlay wyniku
+                    Column(
+                        modifier = Modifier
+                            .align(Alignment.TopCenter)
+                            .padding(top = 16.dp)
+                            .background(
+                                Color.Black.copy(alpha = 0.65f),
+                                shape = RoundedCornerShape(12.dp)
+                            )
+                            .padding(horizontal = 16.dp, vertical = 10.dp)
+                    ) {
+                        Text(
+                            text = currentLabel,
+                            color = Color.White,
+                            fontSize = 26.sp
+                        )
+                        Text(
+                            text = "${(currentConfidence * 100).toInt()}%",
+                            color = Color.White.copy(alpha = 0.85f),
+                            fontSize = 16.sp
+                        )
+                    }
+                } else {
+                    // Placeholder gdy kamera nie działa
+                    Text(
+                        text = "Wybierz model i naciśnij START",
+                        color = Color.White.copy(alpha = 0.6f),
+                        modifier = Modifier.align(Alignment.Center),
+                        fontSize = 18.sp
+                    )
+                }
+            }
+
+            /* ---------- CONTROL PANEL ---------- */
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(
+                        Color(0xFF111111),
+                        shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp)
+                    )
+                    .padding(20.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+
+                Button(
+                    onClick = {
+                        pickModelLauncher.launch(arrayOf("application/octet-stream"))
+                    },
+                    enabled = appState != AppState.RUNNING,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Wybierz model")
+                }
+
+                Button(
+                    onClick = {
+                        when (appState) {
+                            AppState.MODEL_READY -> {
+                                appState = AppState.RUNNING
+                                requestCameraPermission.launch(android.Manifest.permission.CAMERA)
+                            }
+
+                            AppState.RUNNING -> {
+                                stopCamera()
+                                appState = AppState.MODEL_READY
+                            }
+
+                            else -> {}
+                        }
+                    },
+                    enabled = appState != AppState.IDLE,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(if (appState == AppState.RUNNING) "STOP" else "START")
+                }
+            }
+        }
+    }
+
+
+    /* ---------- MODEL LOADING ---------- */
+
+    private fun loadModelFromUri(uri: Uri): Boolean {
+        return try {
+            val bytes = contentResolver.openInputStream(uri)?.readBytes() ?: return false
+            if (::ortSession.isInitialized) ortSession.close()
+            ortSession = ortEnv.createSession(bytes, OrtSession.SessionOptions())
+            true
+        } catch (e: Exception) {
+            e.printStackTrace()
+            false
+        }
+    }
+
+    /* ---------- CAMERA ---------- */
+
+    private fun startCamera() {
+        val providerFuture = ProcessCameraProvider.getInstance(this)
+        providerFuture.addListener({
+            cameraProvider = providerFuture.get()
+            val provider = cameraProvider ?: return@addListener
 
             val preview = Preview.Builder().build().also {
                 it.setSurfaceProvider(previewView.surfaceProvider)
             }
 
-            val imageAnalysis = ImageAnalysis.Builder().setBackpressureStrategy(
-                ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST
-            ).build()
+            val analysis = ImageAnalysis.Builder()
+                .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+                .build()
 
-            imageAnalysis.setAnalyzer(
-                Executors.newSingleThreadExecutor()
-            ) { imageProxy ->
-
+            analysis.setAnalyzer(cameraExecutor) { image ->
                 val now = System.currentTimeMillis()
-
-                if (now - lastInferenceTime > 300) { // ~3 FPS
+                if (now - lastInferenceTime > 300) {
                     lastInferenceTime = now
-
-                    val bitmap = imageProxyToBitmap(imageProxy)
+                    val bitmap = imageProxyToBitmap(image)
                     val (label, conf) = classify(bitmap)
-
                     runOnUiThread {
                         currentLabel = label
                         currentConfidence = conf
                     }
-
-                    println("PREDICTED: $label (${conf * 100}%)")
                 }
-
-                imageProxy.close()
+                image.close()
             }
 
-
-            val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
-
-            cameraProvider.unbindAll()
-            cameraProvider.bindToLifecycle(
-                this, cameraSelector, preview, imageAnalysis
+            provider.unbindAll()
+            provider.bindToLifecycle(
+                this,
+                CameraSelector.DEFAULT_BACK_CAMERA,
+                preview,
+                analysis
             )
-
         }, ContextCompat.getMainExecutor(this))
     }
 
-    fun imageProxyToBitmap(image: ImageProxy): Bitmap {
+    private fun stopCamera() {
+        cameraProvider?.unbindAll()
+        currentLabel = "—"
+        currentConfidence = 0f
+    }
+
+    /* ---------- IMAGE + ML ---------- */
+
+    private fun imageProxyToBitmap(image: ImageProxy): Bitmap {
         val yBuffer = image.planes[0].buffer
         val uBuffer = image.planes[1].buffer
         val vBuffer = image.planes[2].buffer
@@ -222,91 +300,53 @@ class MainActivity : ComponentActivity() {
         uBuffer.get(nv21, ySize + vSize, uSize)
 
         val yuvImage = YuvImage(
-            nv21, ImageFormat.NV21, image.width, image.height, null
+            nv21,
+            ImageFormat.NV21,
+            image.width,
+            image.height,
+            null
         )
 
         val out = ByteArrayOutputStream()
-        yuvImage.compressToJpeg(
-            Rect(0, 0, image.width, image.height), 90, out
-        )
-
+        yuvImage.compressToJpeg(Rect(0, 0, image.width, image.height), 90, out)
         val jpegBytes = out.toByteArray()
-        return BitmapFactory.decodeByteArray(
-            jpegBytes, 0, jpegBytes.size
-        )
+
+        return BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size)
     }
 
 
-    fun argmax(probs: FloatArray): Int {
-        var maxIdx = 0
-        var maxVal = probs[0]
-
-        for (i in 1 until probs.size) {
-            if (probs[i] > maxVal) {
-                maxVal = probs[i]
-                maxIdx = i
-            }
-        }
-        return maxIdx
-    }
-
-    fun classify(bitmap: Bitmap): Pair<String, Float> {
+    private fun classify(bitmap: Bitmap): Pair<String, Float> {
         val tensor = bitmapToTensor(bitmap)
-        val probs = runInference(tensor)
-
-        val idx = argmax(probs)
-        return labels[idx] to probs[idx]
+        val output = runInference(tensor)
+        val idx = output.indices.maxBy { output[it] }
+        return labels[idx] to output[idx]
     }
 
-
-    fun bitmapToTensor(bitmap: Bitmap): OnnxTensor {
+    private fun bitmapToTensor(bitmap: Bitmap): OnnxTensor {
         val resized = Bitmap.createScaledBitmap(bitmap, 224, 224, true)
+        val data = FloatArray(3 * 224 * 224)
+        var r = 0
+        var g = 224 * 224
+        var b = 2 * 224 * 224
 
-        val inputData = FloatArray(1 * 3 * 224 * 224)
-
-        var idxR = 0
-        var idxG = 224 * 224
-        var idxB = 2 * 224 * 224
-
-        for (y in 0 until 224) {
+        for (y in 0 until 224)
             for (x in 0 until 224) {
-                val pixel = resized.getPixel(x, y)
-
-                val r = ((pixel shr 16) and 0xFF) / 255.0f
-                val g = ((pixel shr 8) and 0xFF) / 255.0f
-                val b = (pixel and 0xFF) / 255.0f
-
-                inputData[idxR++] = r
-                inputData[idxG++] = g
-                inputData[idxB++] = b
+                val p = resized.getPixel(x, y)
+                data[r++] = ((p shr 16) and 0xFF) / 255f
+                data[g++] = ((p shr 8) and 0xFF) / 255f
+                data[b++] = (p and 0xFF) / 255f
             }
-        }
-
-        val shape = longArrayOf(1, 3, 224, 224)
 
         return OnnxTensor.createTensor(
-            ortEnv, FloatBuffer.wrap(inputData), shape
+            ortEnv,
+            FloatBuffer.wrap(data),
+            longArrayOf(1, 3, 224, 224)
         )
     }
 
-
-    fun runInference(inputTensor: OnnxTensor): FloatArray {
-        val inputName = ortSession.inputNames.iterator().next()
-
-        val results = ortSession.run(
-            mapOf(inputName to inputTensor)
-        )
-
-        val output = results[0].value as Array<FloatArray>
-
-        return output[0] // 9 klas
+    private fun runInference(tensor: OnnxTensor): FloatArray {
+        val name = ortSession.inputNames.first()
+        val output = ortSession.run(mapOf(name to tensor))[0].value as Array<FloatArray>
+        return output[0]
     }
-
-}
-
-@Composable
-fun Greeting(name: String, modifier: Modifier = Modifier) {
-    Text(
-        text = "Hello $name!", modifier = modifier
-    )
 }
