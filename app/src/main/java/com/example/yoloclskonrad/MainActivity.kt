@@ -27,6 +27,9 @@ import androidx.core.content.ContextCompat
 import java.io.ByteArrayOutputStream
 import java.nio.FloatBuffer
 import java.util.concurrent.Executors
+import androidx.compose.material3.*
+import androidx.compose.foundation.shape.CircleShape
+
 
 /* ---------- APP STATE ---------- */
 
@@ -106,105 +109,188 @@ class MainActivity : ComponentActivity() {
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .background(Color.Black)
+                .background(Color(0xFF0E0E11))
                 .systemBarsPadding()
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
 
-            /* --- CAMERA PREVIEW --- */
-            Box(
+            /* ---------- CAMERA CARD ---------- */
+            Card(
                 modifier = Modifier
                     .weight(1f)
-                    .fillMaxWidth()
+                    .fillMaxWidth(),
+                shape = RoundedCornerShape(20.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = Color.Black
+                )
             ) {
-                if (appState == AppState.RUNNING) {
-                    AndroidView(
-                        modifier = Modifier.fillMaxSize(),
-                        factory = { context ->
-                            previewView = PreviewView(context).apply {
-                                scaleType = PreviewView.ScaleType.FILL_CENTER
-                            }
-                            previewView
-                        }
-                    )
+                Box(modifier = Modifier.fillMaxSize()) {
 
-                    Column(
-                        modifier = Modifier
-                            .align(Alignment.TopCenter)
-                            .padding(top = 16.dp)
-                            .background(
-                                Color.Black.copy(alpha = 0.65f),
-                                RoundedCornerShape(12.dp)
-                            )
-                            .padding(horizontal = 16.dp, vertical = 10.dp)
-                    ) {
-                        Text(currentLabel, color = Color.White, fontSize = 26.sp)
-                        Text(
-                            "${(currentConfidence * 100).toInt()}%",
-                            color = Color.White.copy(alpha = 0.8f),
-                            fontSize = 16.sp
+                    if (appState == AppState.RUNNING) {
+                        AndroidView(
+                            modifier = Modifier.fillMaxSize(),
+                            factory = { context ->
+                                previewView = PreviewView(context).apply {
+                                    scaleType = PreviewView.ScaleType.FILL_CENTER
+                                }
+                                previewView
+                            }
                         )
+
+                        // Result overlay
+                        Column(
+                            modifier = Modifier
+                                .align(Alignment.TopStart)
+                                .padding(16.dp)
+                                .background(
+                                    color = Color.Black.copy(alpha = 0.65f),
+                                    shape = RoundedCornerShape(14.dp)
+                                )
+                                .padding(horizontal = 16.dp, vertical = 12.dp)
+                        ) {
+                            Text(
+                                text = currentLabel.uppercase(),
+                                color = Color.White,
+                                fontSize = 22.sp
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = "${(currentConfidence * 100).toInt()}%",
+                                color = Color.White.copy(alpha = 0.75f),
+                                fontSize = 14.sp
+                            )
+                        }
+                    } else {
+                        Column(
+                            modifier = Modifier
+                                .align(Alignment.Center),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Text(
+                                text = "Model not running",
+                                color = Color.White.copy(alpha = 0.8f),
+                                fontSize = 18.sp
+                            )
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(
+                                text = "Select model and labels to start",
+                                color = Color.White.copy(alpha = 0.5f),
+                                fontSize = 14.sp
+                            )
+                        }
                     }
-                } else {
-                    Text(
-                        text = "Wybierz model i labelki",
-                        color = Color.White.copy(alpha = 0.6f),
-                        modifier = Modifier.align(Alignment.Center),
-                        fontSize = 18.sp
-                    )
                 }
             }
 
-            /* --- CONTROLS --- */
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(
-                        Color(0xFF111111),
-                        RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp)
-                    )
-                    .padding(20.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
+            /* ---------- CONTROL CARD ---------- */
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(20.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = Color(0xFF1A1A1F)
+                )
             ) {
-
-                Button(
-                    onClick = {
-                        pickModelLauncher.launch(arrayOf("application/octet-stream"))
-                    },
-                    enabled = appState == AppState.IDLE
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(20.dp),
+                    verticalArrangement = Arrangement.spacedBy(14.dp)
                 ) {
-                    Text("Wybierz model (.onnx)")
-                }
 
-                Button(
-                    onClick = {
-                        pickLabelsLauncher.launch(arrayOf("text/plain"))
-                    },
-                    enabled = appState == AppState.MODEL_SELECTED
-                ) {
-                    Text("Wybierz labelki (labels.txt)")
-                }
+                    // Status row
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(10.dp)
+                                .background(
+                                    when (appState) {
+                                        AppState.IDLE -> Color.Gray
+                                        AppState.MODEL_SELECTED -> Color(0xFFFFA000)
+                                        AppState.READY -> Color(0xFF4CAF50)
+                                        AppState.RUNNING -> Color(0xFF4CAF50)
+                                    },
+                                    shape = CircleShape
+                                )
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = when (appState) {
+                                AppState.IDLE -> "No model selected"
+                                AppState.MODEL_SELECTED -> "Model selected"
+                                AppState.READY -> "Ready to start"
+                                AppState.RUNNING -> "Running"
+                            },
+                            color = Color.White.copy(alpha = 0.85f),
+                            fontSize = 14.sp
+                        )
+                    }
 
-                Button(
-                    onClick = {
-                        when (appState) {
-                            AppState.READY -> {
-                                appState = AppState.RUNNING
-                                requestCameraPermission.launch(android.Manifest.permission.CAMERA)
+                    Divider(color = Color.White.copy(alpha = 0.1f))
+
+                    Button(
+                        onClick = {
+                            pickModelLauncher.launch(arrayOf("application/octet-stream"))
+                        },
+                        enabled = appState == AppState.IDLE,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Color(0xFF2C2C34)
+                        )
+                    ) {
+                        Text("Select model (.onnx)")
+                    }
+
+                    Button(
+                        onClick = {
+                            pickLabelsLauncher.launch(arrayOf("text/plain"))
+                        },
+                        enabled = appState == AppState.MODEL_SELECTED,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Color(0xFF2C2C34)
+                        )
+                    ) {
+                        Text("Select labels (labels.txt)")
+                    }
+
+                    Button(
+                        onClick = {
+                            when (appState) {
+                                AppState.READY -> {
+                                    appState = AppState.RUNNING
+                                    requestCameraPermission.launch(android.Manifest.permission.CAMERA)
+                                }
+                                AppState.RUNNING -> {
+                                    stopCamera()
+                                    appState = AppState.READY
+                                }
+                                else -> {}
                             }
-                            AppState.RUNNING -> {
-                                stopCamera()
-                                appState = AppState.READY
-                            }
-                            else -> {}
-                        }
-                    },
-                    enabled = appState == AppState.READY || appState == AppState.RUNNING
-                ) {
-                    Text(if (appState == AppState.RUNNING) "STOP" else "START")
+                        },
+                        enabled = appState == AppState.READY || appState == AppState.RUNNING,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(52.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (appState == AppState.RUNNING)
+                                Color(0xFFB71C1C)
+                            else
+                                Color(0xFF4CAF50)
+                        )
+                    ) {
+                        Text(
+                            if (appState == AppState.RUNNING) "STOP" else "START",
+                            fontSize = 16.sp
+                        )
+                    }
                 }
             }
         }
     }
+
 
     /* ---------- MODEL + LABELS ---------- */
 
