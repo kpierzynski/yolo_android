@@ -1,40 +1,22 @@
 package com.example.yoloclskonrad
 
-import ai.onnxruntime.OnnxTensor
-import ai.onnxruntime.OrtEnvironment
-import ai.onnxruntime.OrtSession
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
-import android.graphics.ImageFormat
-import android.graphics.Rect
-import android.graphics.YuvImage
+import ai.onnxruntime.*
+import android.graphics.*
 import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.camera.core.CameraSelector
-import androidx.camera.core.ImageAnalysis
-import androidx.camera.core.ImageProxy
-import androidx.camera.core.Preview
+import androidx.camera.core.*
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.systemBarsPadding
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.setValue
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -46,12 +28,12 @@ import java.io.ByteArrayOutputStream
 import java.nio.FloatBuffer
 import java.util.concurrent.Executors
 
-
 /* ---------- APP STATE ---------- */
 
 enum class AppState {
     IDLE,
-    MODEL_READY,
+    MODEL_SELECTED,
+    READY,
     RUNNING
 }
 
@@ -62,6 +44,9 @@ class MainActivity : ComponentActivity() {
     /* --- ONNX --- */
     private lateinit var ortEnv: OrtEnvironment
     private lateinit var ortSession: OrtSession
+
+    /* --- LABELS --- */
+    private var labels: List<String> = emptyList()
 
     /* --- CAMERA --- */
     private lateinit var previewView: PreviewView
@@ -74,13 +59,6 @@ class MainActivity : ComponentActivity() {
     private var currentLabel by mutableStateOf("—")
     private var currentConfidence by mutableStateOf(0f)
 
-    /* --- LABELS --- */
-    private val labels = listOf(
-        "lewo", "prawo", "przód", "przód-lewo",
-        "przód-prawo", "tył", "tył-lewo",
-        "tył-prawo", "wnętrze"
-    )
-
     /* ---------- PERMISSIONS ---------- */
 
     private val requestCameraPermission =
@@ -90,13 +68,22 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-    /* ---------- FILE PICKER ---------- */
+    /* ---------- FILE PICKERS ---------- */
 
     private val pickModelLauncher =
         registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
             uri?.let {
                 if (loadModelFromUri(it)) {
-                    appState = AppState.MODEL_READY
+                    appState = AppState.MODEL_SELECTED
+                }
+            }
+        }
+
+    private val pickLabelsLauncher =
+        registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+            uri?.let {
+                if (loadLabelsFromUri(it)) {
+                    appState = AppState.READY
                 }
             }
         }
@@ -120,15 +107,14 @@ class MainActivity : ComponentActivity() {
             modifier = Modifier
                 .fillMaxSize()
                 .background(Color.Black)
-                .systemBarsPadding() // 🔥 KLUCZOWE
+                .systemBarsPadding()
         ) {
 
-            /* ---------- CAMERA PREVIEW ---------- */
+            /* --- CAMERA PREVIEW --- */
             Box(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
-                    .background(Color.Black)
             ) {
                 if (appState == AppState.RUNNING) {
                     AndroidView(
@@ -141,32 +127,26 @@ class MainActivity : ComponentActivity() {
                         }
                     )
 
-                    // Overlay wyniku
                     Column(
                         modifier = Modifier
                             .align(Alignment.TopCenter)
                             .padding(top = 16.dp)
                             .background(
                                 Color.Black.copy(alpha = 0.65f),
-                                shape = RoundedCornerShape(12.dp)
+                                RoundedCornerShape(12.dp)
                             )
                             .padding(horizontal = 16.dp, vertical = 10.dp)
                     ) {
+                        Text(currentLabel, color = Color.White, fontSize = 26.sp)
                         Text(
-                            text = currentLabel,
-                            color = Color.White,
-                            fontSize = 26.sp
-                        )
-                        Text(
-                            text = "${(currentConfidence * 100).toInt()}%",
-                            color = Color.White.copy(alpha = 0.85f),
+                            "${(currentConfidence * 100).toInt()}%",
+                            color = Color.White.copy(alpha = 0.8f),
                             fontSize = 16.sp
                         )
                     }
                 } else {
-                    // Placeholder gdy kamera nie działa
                     Text(
-                        text = "Wybierz model i naciśnij START",
+                        text = "Wybierz model i labelki",
                         color = Color.White.copy(alpha = 0.6f),
                         modifier = Modifier.align(Alignment.Center),
                         fontSize = 18.sp
@@ -174,13 +154,13 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
-            /* ---------- CONTROL PANEL ---------- */
+            /* --- CONTROLS --- */
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .background(
                         Color(0xFF111111),
-                        shape = RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp)
+                        RoundedCornerShape(topStart = 20.dp, topEnd = 20.dp)
                     )
                     .padding(20.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
@@ -190,30 +170,35 @@ class MainActivity : ComponentActivity() {
                     onClick = {
                         pickModelLauncher.launch(arrayOf("application/octet-stream"))
                     },
-                    enabled = appState != AppState.RUNNING,
-                    modifier = Modifier.fillMaxWidth()
+                    enabled = appState == AppState.IDLE
                 ) {
-                    Text("Wybierz model")
+                    Text("Wybierz model (.onnx)")
+                }
+
+                Button(
+                    onClick = {
+                        pickLabelsLauncher.launch(arrayOf("text/plain"))
+                    },
+                    enabled = appState == AppState.MODEL_SELECTED
+                ) {
+                    Text("Wybierz labelki (labels.txt)")
                 }
 
                 Button(
                     onClick = {
                         when (appState) {
-                            AppState.MODEL_READY -> {
+                            AppState.READY -> {
                                 appState = AppState.RUNNING
                                 requestCameraPermission.launch(android.Manifest.permission.CAMERA)
                             }
-
                             AppState.RUNNING -> {
                                 stopCamera()
-                                appState = AppState.MODEL_READY
+                                appState = AppState.READY
                             }
-
                             else -> {}
                         }
                     },
-                    enabled = appState != AppState.IDLE,
-                    modifier = Modifier.fillMaxWidth()
+                    enabled = appState == AppState.READY || appState == AppState.RUNNING
                 ) {
                     Text(if (appState == AppState.RUNNING) "STOP" else "START")
                 }
@@ -221,14 +206,39 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-
-    /* ---------- MODEL LOADING ---------- */
+    /* ---------- MODEL + LABELS ---------- */
 
     private fun loadModelFromUri(uri: Uri): Boolean {
         return try {
             val bytes = contentResolver.openInputStream(uri)?.readBytes() ?: return false
             if (::ortSession.isInitialized) ortSession.close()
             ortSession = ortEnv.createSession(bytes, OrtSession.SessionOptions())
+            true
+        } catch (e: Exception) {
+            e.printStackTrace()
+            false
+        }
+    }
+
+    private fun loadLabelsFromUri(uri: Uri): Boolean {
+        return try {
+            val text = contentResolver.openInputStream(uri)
+                ?.bufferedReader()
+                ?.readLines()
+                ?.filter { it.isNotBlank() }
+                ?: return false
+
+            val outputSize =
+                (ortSession.outputInfo.values.first().info as TensorInfo)
+                    .shape[1].toInt()
+
+            if (text.size != outputSize) {
+                throw IllegalArgumentException(
+                    "Labels count (${text.size}) != model classes ($outputSize)"
+                )
+            }
+
+            labels = text
             true
         } catch (e: Exception) {
             e.printStackTrace()
@@ -285,35 +295,25 @@ class MainActivity : ComponentActivity() {
     /* ---------- IMAGE + ML ---------- */
 
     private fun imageProxyToBitmap(image: ImageProxy): Bitmap {
-        val yBuffer = image.planes[0].buffer
-        val uBuffer = image.planes[1].buffer
-        val vBuffer = image.planes[2].buffer
+        val y = image.planes[0].buffer
+        val u = image.planes[1].buffer
+        val v = image.planes[2].buffer
 
-        val ySize = yBuffer.remaining()
-        val uSize = uBuffer.remaining()
-        val vSize = vBuffer.remaining()
+        val ySize = y.remaining()
+        val uSize = u.remaining()
+        val vSize = v.remaining()
 
         val nv21 = ByteArray(ySize + uSize + vSize)
+        y.get(nv21, 0, ySize)
+        v.get(nv21, ySize, vSize)
+        u.get(nv21, ySize + vSize, uSize)
 
-        yBuffer.get(nv21, 0, ySize)
-        vBuffer.get(nv21, ySize, vSize)
-        uBuffer.get(nv21, ySize + vSize, uSize)
-
-        val yuvImage = YuvImage(
-            nv21,
-            ImageFormat.NV21,
-            image.width,
-            image.height,
-            null
-        )
-
+        val yuv = YuvImage(nv21, ImageFormat.NV21, image.width, image.height, null)
         val out = ByteArrayOutputStream()
-        yuvImage.compressToJpeg(Rect(0, 0, image.width, image.height), 90, out)
-        val jpegBytes = out.toByteArray()
+        yuv.compressToJpeg(Rect(0, 0, image.width, image.height), 90, out)
 
-        return BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size)
+        return BitmapFactory.decodeByteArray(out.toByteArray(), 0, out.size())
     }
-
 
     private fun classify(bitmap: Bitmap): Pair<String, Float> {
         val tensor = bitmapToTensor(bitmap)
@@ -325,6 +325,7 @@ class MainActivity : ComponentActivity() {
     private fun bitmapToTensor(bitmap: Bitmap): OnnxTensor {
         val resized = Bitmap.createScaledBitmap(bitmap, 224, 224, true)
         val data = FloatArray(3 * 224 * 224)
+
         var r = 0
         var g = 224 * 224
         var b = 2 * 224 * 224
